@@ -1,0 +1,7 @@
+*.pyc
+__pycache__
+*~
+*.bak
+*.sav
+.vscode
+.mypy_cache
