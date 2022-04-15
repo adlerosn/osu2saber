@@ -3,9 +3,10 @@
 
 from collections import defaultdict
 from enum import IntEnum
-from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple
+from typing import (Any, Callable, DefaultDict, Dict, Generator, List,
+                    Optional, Tuple)
 
-from generictools import identity, pick_most_frequent_or_default_sorting
+from .generictools import identity, pick_most_frequent_or_default_sorting
 
 
 class OsuHitsound:
@@ -153,49 +154,53 @@ class OsuHitObject:
         return 1
 
     def derive_hold_subobjects(self) -> List['OsuHitObject']:
-        objs: List[OsuHitObject] = list()
+        return list(self._derive_hold_subobjects())
+
+    def _derive_hold_subobjects(self) -> Generator['OsuHitObject', None, None]:
+        yield from []
         if self._osu_type == OsuHitObjectType.Spinner:
             time = self.start_time()
             while time <= self._finish_time:
-                objs.append(OsuHitObject(
+                yield OsuHitObject(
                     self._slider_multiplier,
                     self._beat_length,
                     self._x,
                     self._y,
-                    time,
+                    time+0.0,
                     OsuHitObjectType.HitCircle.value,
                     self._hitsound,
                     parent=self,
                     timing_point=self._timing_point,
-                ))
-                time += self._beat_length
+                )
+                time = time + (self._beat_length/1000)
         elif self._osu_type == OsuHitObjectType.Slider:
             tempo = 0
             time = self.start_time()
             while time <= self._finish_time:
-                objs.append(OsuHitObject(
+                obj = OsuHitObject(
                     self._slider_multiplier,
                     self._beat_length,
                     self._x,
                     self._y,
-                    time,
+                    time+0.0,
                     (OsuHitObjectType.SliderEdge.value
                      if tempo == 0 else
                      OsuHitObjectType.SliderHuff.value),
                     self._hitsound,
                     parent=self,
                     timing_point=self._timing_point,
-                ))
-                time += self._beat_length
+                )
+                if obj._finish_time > self._finish_time:
+                    obj._finish_time = self._finish_time
+                yield obj
+                del obj
+                time = time + (self._beat_length/1000)
                 tempo += 1
                 tempo %= self._timing_point.meter
-            if len(objs) > 0:
-                objs[-1]._finish_time = self._finish_time
         elif self._osu_type == OsuHitObjectType.Hold:
-            objs.append(self)
+            yield self
         else:
-            objs.append(self)
-        return objs
+            yield self
 
     @ classmethod
     def from_line(cls, osu_line: str, osu_timing_points_objects: List['OsuTimingPoint'], slide_multiplier: float) -> 'OsuHitObject':

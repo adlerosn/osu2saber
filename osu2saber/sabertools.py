@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from more_itertools import last
+
 '''https://bsmg.wiki/mapping/map-format.html'''
 
 
@@ -44,7 +46,7 @@ class BeatSaberInfoButDifficulties:
         return round(round(event_ms/self._msBetweenTimePoints)*self._msBetweenTimePoints)
 
     def convert_to_beat(self, event_ms: Union[int, float]) -> float:
-        return self.round_to_beat(event_ms)/(self._msBetweenTimePoints*4)
+        return round(round(event_ms/self._msBetweenTimePoints)/4, 2)
 
     def with_song_sub_name(self, songSubName: str) -> 'BeatSaberInfoButDifficulties':
         return type(self)(
@@ -369,12 +371,25 @@ class NoteCutDirectionEnum(IntEnum):
         if x > 0 and y > 0:
             return cls.UpRight
         if x == 0 and y < 0:
-            return cls.Up
+            return cls.Down
         if x < 0 and y < 0:
-            return cls.UpLeft
+            return cls.DownLeft
         if x > 0 and y < 0:
-            return cls.UpRight
+            return cls.DownRight
         return cls.Any
+
+    def into_movement(self) -> Tuple[int, int]:
+        x = 0
+        y = 0
+        if self.name.startswith('Up'):
+            y = 1
+        elif self.name.startswith('Down'):
+            y = -1
+        if self.name.endswith('Right'):
+            x = 1
+        elif self.name.endswith('Left'):
+            x = -1
+        return x, y
 
 
 class NoteCanvasPositionEnum(IntEnum):
@@ -405,29 +420,9 @@ class BeatSaberHandCoordinateHolder:
         idx = self.index.value
         lyr = self.layer.value
         '''Remider: origin is bottom-left'''
-        match cut:
-            case NoteCutDirectionEnum.Up:
-                lyr += 1
-            case NoteCutDirectionEnum.Down:
-                lyr -= 1
-            case NoteCutDirectionEnum.Left:
-                idx -= 1
-            case NoteCutDirectionEnum.Right:
-                idx += 1
-            case NoteCutDirectionEnum.UpLeft:
-                idx += 1
-                lyr -= 1
-            case NoteCutDirectionEnum.UpRight:
-                idx += 1
-                lyr += 1
-            case NoteCutDirectionEnum.DownLeft:
-                idx -= 1
-                lyr -= 1
-            case NoteCutDirectionEnum.DownRight:
-                idx -= 1
-                lyr += 1
-            case _:
-                pass
+        m = cut.into_movement()
+        idx += m[0]
+        lyr += m[1]
         return BeatSaberHandCoordinateHolder(NoteLineIndexEnum(idx), NoteLineLayerEnum(lyr))
 
     def follow(self, cut: NoteCutDirectionEnum):
@@ -445,34 +440,34 @@ class BeatSaberHandCoordinateHolder:
 
 class BeatSaberCoreographyHintHolder:
     def __init__(self,
-                 beat_start: float,
-                 beat_finish: float,
+                 time_start: int,
+                 time_finish: int,
                  coordinate: BeatSaberHandCoordinateHolder,
                  coordinate_end: BeatSaberHandCoordinateHolder,
-                 obstacle_type: NoteTypeEnum,
+                 note_type: NoteTypeEnum,
                  cut_direction: NoteCutDirectionEnum,
                  ) -> None:
-        self.beat_start: float = beat_start
-        self.beat_finish: float = beat_finish
+        self.time_start: int = time_start
+        self.time_finish: int = time_finish
         self.coordinate: BeatSaberHandCoordinateHolder = coordinate
         self.coordinate_end: BeatSaberHandCoordinateHolder = coordinate_end
-        self.obstacle_type: NoteTypeEnum = obstacle_type
+        self.note_type: NoteTypeEnum = note_type
         self.cut_direction: NoteCutDirectionEnum = cut_direction
 
     def is_arc(self) -> bool:
-        return self.beat_start != self.beat_finish
+        return self.time_start != self.time_finish
 
 
 class BeatSaberHandPositionSimulator:
     def __init__(self,
                  hdisp: int,
-                 timing: float,
+                 timing: int,
                  coordinate: BeatSaberHandCoordinateHolder,
                  direction: NoteCutDirectionEnum,
                  on_arc: bool,
                  ) -> None:
         self.hdisp: int = hdisp
-        self.timing: float = timing
+        self.timing: int = timing
         self.coordinate: BeatSaberHandCoordinateHolder = coordinate
         self.direction: NoteCutDirectionEnum = direction
         self.on_arc = on_arc
@@ -494,8 +489,9 @@ class BeatSaberHandPositionSimulator:
     def check_cut_movement_towards(self, other: BeatSaberHandCoordinateHolder) -> NoteCutDirectionEnum:
         return self.coordinate.if_goto(other)
 
-    def check_cut(self, beat_start: float, beat_finish: float, beat_pos: NoteCanvasPositionEnum, obstacle_type: NoteTypeEnum) -> BeatSaberCoreographyHintHolder:
-        is_arc = beat_start == beat_finish
+    def check_cut(self, time_start: int, time_finish: int, beat_pos: NoteCanvasPositionEnum, note_type: NoteTypeEnum) -> BeatSaberCoreographyHintHolder:
+        is_arc = BeatSaberCoreographyHintHolder(
+            time_start, time_finish, 0, 0, 0, 0).is_arc()  # type: ignore
         canvas_pos = self.adapt(beat_pos)
         cut_direction = self.check_cut_movement_towards(canvas_pos)
         if (is_arc or self.on_arc) and cut_direction == NoteCutDirectionEnum.Any:
@@ -506,26 +502,27 @@ class BeatSaberHandPositionSimulator:
         if (is_arc or self.on_arc) and cut_direction == NoteCutDirectionEnum.Any:
             cut_direction = NoteCutDirectionEnum.Down
         return BeatSaberCoreographyHintHolder(
-            beat_start, beat_finish,
+            time_start, time_finish,
             canvas_pos.copy(),
             canvas_pos.copy(),
-            obstacle_type,
+            note_type,
             cut_direction,
         )
 
-    def cut(self, now: float, coreography: BeatSaberCoreographyHintHolder):
+    def cut(self, now: int, coreography: BeatSaberCoreographyHintHolder):
         self.timing = now
-        self.coordinate = coreography.coordinate.copy()
+        self.coordinate = coreography.coordinate.copy().if_follow(coreography.cut_direction)
         self.direction = coreography.cut_direction
         self.on_arc = coreography.is_arc()
 
 
 class BeatSaberHandsPositionsSimulator:
-    def __init__(self) -> None:
+    def __init__(self, bsi: BeatSaberInfoButDifficulties) -> None:
+        self.bsi = bsi
         self.hands = [
             BeatSaberHandPositionSimulator(
                 0,
-                0.0,
+                0,
                 BeatSaberHandCoordinateHolder(
                     NoteLineIndexEnum.LightLeft,
                     NoteLineLayerEnum.Top,
@@ -535,7 +532,7 @@ class BeatSaberHandsPositionsSimulator:
             ),
             BeatSaberHandPositionSimulator(
                 1,
-                0.0,
+                0,
                 BeatSaberHandCoordinateHolder(
                     NoteLineIndexEnum.LightRight,
                     NoteLineLayerEnum.Top,
@@ -568,18 +565,19 @@ class BeatSaberHandsPositionsSimulator:
         self.hands[1] = value
 
     def move_to(self,
-                now: float,
+                now: int,
                 both_hands: bool,
                 preferred_hands: Tuple[NoteTypeEnum, NoteTypeEnum],
-                points_of_attention: List[Tuple[int, Tuple[float, float], NoteCanvasPositionEnum]]):
+                points_of_attention: List[Tuple[int, Tuple[int, int], NoteCanvasPositionEnum]]) -> int:
+        moves = 0
         for hand in range(2):  # free hand before assigning tasks
             coreography_id = self.coreography_hand_ids[hand]
-            if coreography_id != -1 and self.coreography_contents[coreography_id].beat_finish < now:
+            if coreography_id != -1 and now >= self.coreography_contents[coreography_id].time_finish:
                 self.last_coreography_hand_ids[hand] = self.coreography_hand_ids[hand]
                 self.coreography_hand_ids[hand] = -1
                 if self.hands[hand].on_arc:
                     self.hands[hand].on_arc = False
-                    self.hands[hand].direction = self.hands[hand].direction.opposite()
+                    #self.hands[hand].direction = self.hands[hand].direction.opposite()
             del coreography_id
             del hand
         sorted_poas = sorted(points_of_attention,
@@ -589,69 +587,103 @@ class BeatSaberHandsPositionsSimulator:
         #                     3rd: [irrelevant now due to parent caller inner workings]
         #                     4th: last sorting criteria (kinda irrelevant, but here for sorting stability)
         for (beat_id, (beat_start, beat_finish), beat_pos) in sorted_poas:
-            if now != beat_start and now != beat_finish:
+            if now != beat_start:  # and now != beat_finish:
                 # ignore ongoing notes
+                continue
+            if beat_id in self.coreography_ids:
                 continue
             # from now on, only notes and arc beginnings
             available_hands = [NoteTypeEnum(h)
                                for h, x in enumerate(self.coreography_hand_ids)
-                               if x == -1 or self.coreography_contents[x].beat_start < now]
+                               if x == -1]
             if len(available_hands) < 1:
-                print(f'  #> WARNING: busy hands dropped beat at {now}')
-                return
+                # print(' '*8+f'#> WARNING: busy hands dropped beat at {now}')
+                continue
             active_hands = (
-                [next(h for h in preferred_hands if h in available_hands)]
-                if not both_hands else
-                available_hands)
+                list(preferred_hands) if both_hands else
+                (
+                    [next(h for h in preferred_hands if h in available_hands)]
+                )
+            )
             del available_hands
+            moved = True
+            last_both_handed_cut_direction = NoteCutDirectionEnum.Any
             for active_hand_enum in active_hands:
+                # if both_hands:
+                #     print(active_hands, now, active_hand_enum)
                 last_coreography: Optional[BeatSaberCoreographyHintHolder] = self.coreography_contents.get(
                     self.last_coreography_hand_ids[active_hand_enum.value])
                 active_hand = self.hands[active_hand_enum.value]
                 coreography = active_hand.check_cut(
                     beat_start, beat_finish, beat_pos, active_hand_enum)
-                if last_coreography is not None and last_coreography.beat_finish == coreography.beat_start and last_coreography.is_arc():
-                    # if the last coreography was an arc that ends where this begins
+                if last_coreography is not None and abs(last_coreography.time_finish - coreography.time_start) <= 750 and last_coreography.is_arc():
+                    # if the last coreography was an arc that ends close to where this begins
                     # update to match the beginning of this item
                     last_coreography.coordinate_end = coreography.coordinate.copy()
+                    last_coreography.time_finish = coreography.time_start
+                    coreography.cut_direction = last_coreography.cut_direction.opposite()
+                    if both_hands:
+                        if last_both_handed_cut_direction == NoteCutDirectionEnum.Any:
+                            last_both_handed_cut_direction = coreography.cut_direction
+                        else:
+                            coreography.cut_direction = last_both_handed_cut_direction
+                elif (
+                        last_coreography is not None and
+                        not last_coreography.is_arc() and not coreography.is_arc() and
+                        last_coreography.coordinate.layer == coreography.coordinate.layer and
+                        last_coreography.coordinate.index == coreography.coordinate.index and
+                        True):
+                    coreography.cut_direction = NoteCutDirectionEnum.Any
+                    moved = False
+                if coreography.is_arc():
+                    moved = False
                 del last_coreography
+                fixed_beat_id = beat_id if not both_hands else beat_id + active_hand_enum.value
                 active_hand.cut(now, coreography)
-                self.coreography_contents[beat_id] = coreography
-                self.coreography_ids.append(beat_id)
+                self.coreography_hand_ids[active_hand_enum.value] = fixed_beat_id
+                self.coreography_contents[fixed_beat_id] = coreography
+                self.coreography_ids.append(fixed_beat_id)
+                del fixed_beat_id
+                del coreography
                 del active_hand
                 del active_hand_enum
+            del last_both_handed_cut_direction
+            if moved:
+                moves += 1
+            del moved
             del beat_id
             del beat_start
             del beat_finish
             del beat_pos
         del sorted_poas
+        return moves
 
-    def build_coreography(self, breaks: List[Tuple[float, float]] = list()) -> BeatSaberDifficultyV260:
+    def build_coreography(self, breaks: List[Tuple[int, int]] = list()) -> BeatSaberDifficultyV260:
         difficulty = BeatSaberDifficultyV260()
         for id_ in self.coreography_ids:
             coreography = self.coreography_contents[id_]
             difficulty.notes.append(
                 BeatSaberDifficultyNote(
-                    coreography.beat_start,
+                    self.bsi.convert_to_beat(coreography.time_start),
                     coreography.coordinate.index,
                     coreography.coordinate.layer,
-                    coreography.obstacle_type,
+                    coreography.note_type,
                     coreography.cut_direction,
                 )
             )
             if coreography.is_arc():
                 difficulty.sliders.append(
                     BeatSaberDifficultySlider(
-                        coreography.obstacle_type,
-                        coreography.beat_start,
+                        coreography.note_type,
+                        self.bsi.convert_to_beat(coreography.time_start),
                         coreography.coordinate.index,
                         coreography.coordinate.layer,
-                        1.0,
+                        0.4,
                         coreography.cut_direction,
-                        coreography.beat_finish,
+                        self.bsi.convert_to_beat(coreography.time_finish),
                         coreography.coordinate_end.index,
                         coreography.coordinate_end.layer,
-                        1.0,
+                        0.4,
                         coreography.cut_direction.opposite(),
                         SliderMidAnchorModeEnum.Straight,
                     )
@@ -662,10 +694,10 @@ class BeatSaberHandsPositionsSimulator:
             for w in (NoteLineIndexEnum.FarLeft, NoteLineIndexEnum.FarRight):
                 difficulty.obstacles.append(
                     BeatSaberDifficultyObstacle(
-                        s,
+                        self.bsi.convert_to_beat(s),
                         w,
                         BeatSaberDifficultyObstacleTypeEnum.FullHeightWall,
-                        round((e-s)*4)/4,
+                        self.bsi.convert_to_beat(e-s),
                         1,
                     )
                 )

@@ -9,17 +9,17 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import PIL.Image
-from generictools import (IntSpanDict, avg, distance_of_incresing_values,
-                          flatten, linear_clusterization,
-                          pick_the_largest_sublist)
-from osutools import (OsuFileSomeMetadata, OsuHitObject, OsuModesEnum,
-                      get_audio_file_from_section,
-                      get_osu_hit_objects_from_section, get_osu_sections,
-                      get_some_metadata_from_section)
-from sabertools import (BeatSaberDifficultyV260,
-                        BeatSaberHandsPositionsSimulator,
-                        BeatSaberInfoButDifficulties, NoteCanvasPositionEnum,
-                        NoteTypeEnum)
+from .generictools import (IntSpanDict, avg, distance_of_incresing_values,
+                           flatten, linear_clusterization,
+                           pick_the_largest_sublist)
+from .osutools import (OsuFileSomeMetadata, OsuHitObject, OsuModesEnum,
+                       get_audio_file_from_section,
+                       get_osu_hit_objects_from_section, get_osu_sections,
+                       get_some_metadata_from_section)
+from .sabertools import (BeatSaberDifficultyV260,
+                         BeatSaberHandsPositionsSimulator,
+                         BeatSaberInfoButDifficulties, NoteCanvasPositionEnum,
+                         NoteTypeEnum)
 
 RGX_OSU_SCHEMA = re.compile(r'(\d+) (.+?) - (.+)')
 
@@ -159,7 +159,7 @@ def convert_beatsets_osu2saber(osu_beatsets: List[Tuple[OsuFileSomeMetadata, Lis
         '',
         osu_metadata_merged.artist,
         osu_metadata_merged.creator,
-        figure_out_bpm(bsaber_attention_pointss, 60, 410),
+        figure_out_bpm(bsaber_attention_pointss, 50, 190),
         customData=dict(
             generator='osu2saber',
             source='osu!',
@@ -184,14 +184,16 @@ def convert_beatsets_osu2saber(osu_beatsets: List[Tuple[OsuFileSomeMetadata, Lis
         multi_key: bool = osu_metadata.mode == OsuModesEnum.Mania
         del osu_metadata
         del _
-        hands_pos_sim = BeatSaberHandsPositionsSimulator()
+        hands_pos_sim = BeatSaberHandsPositionsSimulator(
+            saberinfo_without_difficulties)
         FUTURE_LOOK = 3000
-        PAST_LOOK = 3000
+        PAST_LOOK = 6000
         bsaber_bpmd_points_of_interest = bsaber_bpmd_attention_points.points_of_interest()
         kiais: List[Tuple[int, bool]] = list()
         breaks: List[Tuple[int, int]] = list()
         combos: List[Tuple[int, int]] = list()
         LPOI = 0
+        hand_moves = 0
         for point_of_interest in bsaber_bpmd_points_of_interest:
             active_points_of_interest = sorted(bsaber_bpmd_attention_points.active_at_point(
                 point_of_interest), key=lambda a: (a.start_time(), a.new_combo(), a.is_kiai()))
@@ -279,16 +281,16 @@ def convert_beatsets_osu2saber(osu_beatsets: List[Tuple[OsuFileSomeMetadata, Lis
                 del active_point_of_interest
             del active_points_of_interest
             double_hand: bool = kiais[-1][1] and not multi_key
-            preferred_hand = NoteTypeEnum(len(combos) % 2)
-            least_preferred_hand = NoteTypeEnum((len(combos)+1) % 2)
-            hands_pos_sim.move_to(
-                conv_to_beat(point_of_interest),
+            preferred_hand = NoteTypeEnum((len(combos)+hand_moves) % 2)
+            least_preferred_hand = NoteTypeEnum((preferred_hand.value+1) % 2)
+            hand_moves += hands_pos_sim.move_to(
+                point_of_interest,
                 double_hand,
                 (preferred_hand, least_preferred_hand),
                 [
                     (id(apoi),
-                     (conv_to_beat(apoi.start_time()*1000),
-                        conv_to_beat(apoi.finish_time()*1000)),
+                     (round_to_beat(apoi.start_time()*1000),
+                      round_to_beat(apoi.finish_time()*1000)),
                      canvas)
                     for canvas, apoi in active_hand_goals])
             del preferred_hand
@@ -296,9 +298,10 @@ def convert_beatsets_osu2saber(osu_beatsets: List[Tuple[OsuFileSomeMetadata, Lis
             del active_hand_goals
             LPOI = point_of_interest
             del point_of_interest
+        del hand_moves
         del LPOI
         sidx = 1 if (len(breaks) > 0 and breaks[0][0] == 0) else 0
-        breaks_adj = [(conv_to_beat(s+FUTURE_LOOK/6), conv_to_beat(e-FUTURE_LOOK/6))
+        breaks_adj = [(int(s+PAST_LOOK/6), int(e-PAST_LOOK/6))
                       for s, e in breaks[sidx:]]
         del sidx
         bsaber_difficulties.append(hands_pos_sim.build_coreography(breaks_adj))
@@ -335,7 +338,7 @@ def figure_out_bpm(bsaber_attention_pointss: List[IntSpanDict[OsuHitObject]], mn
     avg_cluster_time_distance_between_notes = avg(
         cluster_time_distance_between_notes)
     del cluster_time_distance_between_notes
-    bpm = 60000/(2*avg_cluster_time_distance_between_notes)
+    bpm = 60000/(1*avg_cluster_time_distance_between_notes)
     if bpm <= 0:
         return 120.0
     while bpm < mn:
@@ -426,6 +429,7 @@ def convert_audio_osu2saber(beatmapset_osu: Path, saber_beatmap_audio: Path, osu
                 '-i', str(osu_beatmap_audio),
                 '-q', '9',
                 '-map_metadata', '-1',
+                '-vn', '-acodec', 'libvorbis',
                 str(saber_beatmap_audio_tmp),
              ],
         )
@@ -442,7 +446,3 @@ def convert_audio_osu2saber(beatmapset_osu: Path, saber_beatmap_audio: Path, osu
         del osu_beatmap_audio
     del saber_beatmap_audio
     return False
-
-
-if __name__ == '__main__':
-    main()
